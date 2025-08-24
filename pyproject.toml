@@ -4,7 +4,11 @@ version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "boto3>=1.40.16",
+    "dotenv>=0.9.9",
+    "google-cloud-storage>=3.3.0",
+]
 
 [tool.ruff]
 exclude = ["*.venv*"]
@@ -14,6 +18,15 @@ line-length = 120
 combine-as-imports = false             # 預設不合併 `as` 別名的 import
 force-single-line = false              # 預設不強制每個 import 獨立成一行 (不管長度)
 known-first-party = ["app", "de_*kit"]
+
+[dependency-groups]
+deploy = [
+    "aws-cdk-lib>=2.212.0",
+    "constructs>=10.0.0,<11.0.0",
+]
+dev = [
+    "pytest==6.2.5",
+]
 
 
 [tool.ruff.lint] # https://docs.astral.sh/ruff/settings/#lint
