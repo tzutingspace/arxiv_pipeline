@@ -74,15 +74,16 @@ def lambda_handler(event, context):
     # 1. 確認當下 S3 的最新檔案的詳細資料
     latest_file = get_latest_file_from_s3(S3_BUCKET_NAME, S3_FOLDER_PREFIX)
     latest_file_update_timestamp = latest_file["upload_timestamp"]
+    logger.info(f"latest file detail info: {latest_file}")
 
     # 2. 確認來源的 metadata.json 的版本號
-    gcs_client = storage.Client()
+    gcs_client = storage.Client.create_anonymous_client()
     file_info = get_gcs_object_info(gcs_client, "arxiv-dataset", "metadata-v5/arxiv-metadata-oai.json")
     source_file_update_timestamp = file_info["update_time"]
     logger.info(f"source file detail info: {file_info}")
 
     # 3. 如果來源的版本號比當下 S3 的版本號相同，則跳過
-    if source_file_update_timestamp == latest_file_update_timestamp:
+    if int(source_file_update_timestamp) == int(latest_file_update_timestamp):
         logger.info("source file is up to date")
         return
 
