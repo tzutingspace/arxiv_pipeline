@@ -1,0 +1,28 @@
+[project]
+name = "arxiv-pipeline"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = []
+
+[tool.ruff]
+exclude = ["*.venv*"]
+line-length = 120
+
+[tool.ruff.lint.isort] # https://docs.astral.sh/ruff/settings/#lintisort
+combine-as-imports = false             # 預設不合併 `as` 別名的 import
+force-single-line = false              # 預設不強制每個 import 獨立成一行 (不管長度)
+known-first-party = ["app", "de_*kit"]
+
+
+[tool.ruff.lint] # https://docs.astral.sh/ruff/settings/#lint
+select = [
+    "E",  # pycodestyle errors
+    "W",  # pycodestyle warnings
+    "F",  # pyflakes
+    "I",  # isort
+    "C",  # flake8-comprehensions
+    "B",  # flake8-bugbear
+    "UP", # pyupgrade
+]
