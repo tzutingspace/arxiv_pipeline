@@ -7,8 +7,15 @@ from dotenv import load_dotenv
 from google.cloud import storage
 from utils.format_time import datetime_to_timestamp
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
-logger = logging.getLogger(__name__)
+# 檢查是否在 Lambda 環境中
+if "AWS_LAMBDA_FUNCTION_NAME" in os.environ:
+    # Lambda 環境：使用簡單設定
+    logger = logging.getLogger()
+    logger.setLevel(logging.INFO)
+else:
+    # 本地環境：使用 basicConfig
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+    logger = logging.getLogger(__name__)
 
 load_dotenv()
 
@@ -104,4 +111,5 @@ def upload_to_s3(bucket_name: str, object_name: str, file_bytes: bytes) -> None:
 
 
 if __name__ == "__main__":
-    lambda_handler(None, None)
+    if os.getenv("ENV") == "local":
+        lambda_handler(None, None)
