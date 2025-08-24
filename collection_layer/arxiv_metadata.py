@@ -11,8 +11,34 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(level
 logger = logging.getLogger(__name__)
 
 load_dotenv()
+
 S3_BUCKET_NAME = os.getenv("S3_BUCKET_NAME")
 S3_FOLDER_PREFIX = os.getenv("S3_FOLDER_PREFIX")
+
+SOURCE_GCS_BUCKET_NAME = "arxiv-dataset"
+SOURCE_GCS_OBJECT_NAME = "metadata-v5/arxiv-metadata-oai.json"
+
+
+def lambda_handler(event, context):
+    # 1. 確認當下 S3 的最新檔案的詳細資料
+    latest_file = get_latest_file_from_s3(S3_BUCKET_NAME, S3_FOLDER_PREFIX)
+    latest_file_update_timestamp = latest_file["upload_timestamp"]
+    logger.info(f"latest file detail info: {latest_file}")
+
+    # 2. 確認來源的 metadata.json 的版本號
+    file_info = get_gcs_object_info(SOURCE_GCS_BUCKET_NAME, SOURCE_GCS_OBJECT_NAME)
+    source_file_update_timestamp = file_info["update_time"]
+    logger.info(f"source file detail info: {file_info}")
+
+    # 3. 如果來源的版本號比當下 S3 的版本號相同，則跳過
+    if int(source_file_update_timestamp) == int(latest_file_update_timestamp):
+        logger.info("source file is up to date")
+        return
+
+    # 4. 下載最新的 metadata.json 並且直接先上傳至 S3
+    source_file_bytes = download_as_bytes_from_gcs(SOURCE_GCS_BUCKET_NAME, SOURCE_GCS_OBJECT_NAME)
+    new_file_name = f"{S3_FOLDER_PREFIX}-{source_file_update_timestamp}.json"
+    upload_to_s3(S3_BUCKET_NAME, new_file_name, source_file_bytes)
 
 
 def get_latest_file_from_s3(bucket_name: str, folder_prefix: str) -> dict[str, Any]:
@@ -42,10 +68,11 @@ def get_latest_file_from_s3(bucket_name: str, folder_prefix: str) -> dict[str, A
     }
 
 
-def get_gcs_object_info(client: storage.Client, bucket_name: str, object_name: str) -> dict[str, Any]:
+def get_gcs_object_info(bucket_name: str, object_name: str) -> dict[str, Any]:
     """
     取得 GCS 物件的詳細資訊，類似 gsutil ls -L 的輸出
     """
+    client = storage.Client.create_anonymous_client()
     bucket = client.bucket(bucket_name)
     blob = bucket.blob(object_name)
 
@@ -64,34 +91,16 @@ def get_gcs_object_info(client: storage.Client, bucket_name: str, object_name: s
     }
 
 
-def download_as_bytes_from_gcs(client: storage.Client, bucket_name: str, object_name: str) -> bytes:
+def download_as_bytes_from_gcs(bucket_name: str, object_name: str) -> bytes:
+    client = storage.Client.create_anonymous_client()
     bucket = client.bucket(bucket_name)
     blob = bucket.blob(object_name)
     return blob.download_as_bytes()
 
 
-def lambda_handler(event, context):
-    # 1. 確認當下 S3 的最新檔案的詳細資料
-    latest_file = get_latest_file_from_s3(S3_BUCKET_NAME, S3_FOLDER_PREFIX)
-    latest_file_update_timestamp = latest_file["upload_timestamp"]
-    logger.info(f"latest file detail info: {latest_file}")
-
-    # 2. 確認來源的 metadata.json 的版本號
-    gcs_client = storage.Client.create_anonymous_client()
-    file_info = get_gcs_object_info(gcs_client, "arxiv-dataset", "metadata-v5/arxiv-metadata-oai.json")
-    source_file_update_timestamp = file_info["update_time"]
-    logger.info(f"source file detail info: {file_info}")
-
-    # 3. 如果來源的版本號比當下 S3 的版本號相同，則跳過
-    if int(source_file_update_timestamp) == int(latest_file_update_timestamp):
-        logger.info("source file is up to date")
-        return
-
-    # 4. 下載最新的 metadata.json 並且直接先上傳至 S3
-    source_file_bytes = download_as_bytes_from_gcs(gcs_client, "arxiv-dataset", "metadata-v5/arxiv-metadata-oai.json")
+def upload_to_s3(bucket_name: str, object_name: str, file_bytes: bytes) -> None:
     s3 = boto3.client("s3")
-    new_file_name = f"{S3_FOLDER_PREFIX}-{source_file_update_timestamp}.json"
-    s3.put_object(Bucket=S3_BUCKET_NAME, Key=new_file_name, Body=source_file_bytes)
+    s3.put_object(Bucket=bucket_name, Key=object_name, Body=file_bytes)
 
 
 if __name__ == "__main__":
