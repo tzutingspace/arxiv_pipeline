@@ -1,15 +1,12 @@
 import logging
 import os
-from typing import Any
 
 import boto3
+import pandas as pd
 from dotenv import load_dotenv
-from google.cloud import storage
-from utils.format_time import datetime_to_timestamp
+from utils.format_time import iso_to_timestamp_ms
 
-# 檢查是否在 Lambda 環境中
 if "AWS_LAMBDA_FUNCTION_NAME" in os.environ:
-    # Lambda 環境：使用簡單設定
     logger = logging.getLogger()
     logger.setLevel(logging.INFO)
 else:
@@ -28,86 +25,104 @@ SOURCE_GCS_OBJECT_NAME = "metadata-v5/arxiv-metadata-oai.json"
 
 def lambda_handler(event, context):
     # 1. 確認當下 S3 的最新檔案的詳細資料
-    latest_file = get_latest_file_from_s3(S3_BUCKET_NAME, S3_FOLDER_PREFIX)
-    latest_file_update_timestamp = latest_file["upload_timestamp"]
-    logger.info(f"latest file detail info: {latest_file}")
+    latest_file_update_timestamp = get_latest_processed_timestamp()
 
-    # 2. 確認來源的 metadata.json 的版本號
-    file_info = get_gcs_object_info(SOURCE_GCS_BUCKET_NAME, SOURCE_GCS_OBJECT_NAME)
-    source_file_update_timestamp = file_info["update_time"]
-    logger.info(f"source file detail info: {file_info}")
+    # 2. 確認來源的 metadata.json 的最新更新時間
+    kaggle_arxiv_metadata_service = ArxivMetadataService()
+    latest_update_timestamp = kaggle_arxiv_metadata_service.get_latest_update_time()
 
     # 3. 如果來源的版本號比當下 S3 的版本號相同，則跳過
-    if int(source_file_update_timestamp) == int(latest_file_update_timestamp):
+    if int(latest_update_timestamp) == int(latest_file_update_timestamp):
         logger.info("source file is up to date")
-        return
+        return {"status": "skip"}
 
-    # 4. 下載最新的 metadata.json 並且直接先上傳至 S3
-    source_file_bytes = download_as_bytes_from_gcs(SOURCE_GCS_BUCKET_NAME, SOURCE_GCS_OBJECT_NAME)
-    new_file_name = f"{S3_FOLDER_PREFIX}-{source_file_update_timestamp}.json"
-    upload_to_s3(S3_BUCKET_NAME, new_file_name, source_file_bytes)
+    # 4. 下載最新的 metadata.json
+    source_file_path = kaggle_arxiv_metadata_service.download_latest_metadata()
+
+    # 5. 處理 metadata.json 的資料
+    process_metadata_json(source_file_path)
+
+    # 6. 上傳最新的 metadata.json 至 S3, 表示已進入下一個流程
+    new_file_name = f"{S3_FOLDER_PREFIX}-{latest_update_timestamp}.json"
+    upload_to_s3(S3_BUCKET_NAME, new_file_name, source_file_path)
+
+    return {"status": "success"}
 
 
-def get_latest_file_from_s3(bucket_name: str, folder_prefix: str) -> dict[str, Any]:
-    """
-    取得 S3 資料夾中最新檔案名稱
-    """
+def get_latest_processed_timestamp() -> int:
     s3 = boto3.client("s3")
-
-    # 列出資料夾中的所有檔案
-    response = s3.list_objects_v2(Bucket=bucket_name, Prefix=folder_prefix)
-
-    # 找出最新的檔案
+    response = s3.list_objects_v2(Bucket=S3_BUCKET_NAME, Prefix=S3_FOLDER_PREFIX)
     latest_file = max(response["Contents"], key=lambda x: x["LastModified"])
-
-    # 取得最新檔案的詳細資訊
-    # file_details = s3.head_object(Bucket=bucket_name, Key=latest_file["Key"])
-    try:
-        latest_file_name = latest_file["Key"]
-        upload_timestamp = latest_file_name.split("-")[-1].split(".")[0]
-    except Exception as e:
-        logger.error(e)
-        raise e
-
-    return {
-        "file_name": latest_file_name,
-        "upload_timestamp": upload_timestamp,
-    }
+    logger.info(f"latest_processed_file: {latest_file}")
+    return latest_file["Key"].split("-")[-1].split(".")[0]
 
 
-def get_gcs_object_info(bucket_name: str, object_name: str) -> dict[str, Any]:
-    """
-    取得 GCS 物件的詳細資訊，類似 gsutil ls -L 的輸出
-    """
-    client = storage.Client.create_anonymous_client()
-    bucket = client.bucket(bucket_name)
-    blob = bucket.blob(object_name)
-
-    blob.reload()  # 重新載入以取得最新的 metadata
-
-    return {
-        "gs_url": f"gs://{bucket_name}/{object_name}",
-        "creation_time": datetime_to_timestamp(blob.time_created),
-        "update_time": datetime_to_timestamp(blob.updated),
-        "size": blob.size,
-        "md5_hash": blob.md5_hash,
-        "crc32c_hash": blob.crc32c,
-        "etag": blob.etag,
-        "generation": blob.generation,
-        "metageneration": blob.metageneration,
-    }
-
-
-def download_as_bytes_from_gcs(bucket_name: str, object_name: str) -> bytes:
-    client = storage.Client.create_anonymous_client()
-    bucket = client.bucket(bucket_name)
-    blob = bucket.blob(object_name)
-    return blob.download_as_bytes()
-
-
-def upload_to_s3(bucket_name: str, object_name: str, file_bytes: bytes) -> None:
+def upload_to_s3(bucket_name: str, object_name: str, file_path: str) -> None:
     s3 = boto3.client("s3")
-    s3.put_object(Bucket=bucket_name, Key=object_name, Body=file_bytes)
+    s3.upload_file(file_path, bucket_name, object_name)
+
+
+class ArxivMetadataService:
+    def __init__(self):
+        self.dataset_ref = "Cornell-University/arxiv"
+        self._init_kaggle()
+
+    def _init_kaggle(self):
+        # Import kaggle only when needed to avoid undefined errors
+        import kaggle
+
+        self.kaggle = kaggle
+        self.kaggle.api.authenticate()
+
+    def get_latest_update_time(self) -> int:
+        datasets = self.kaggle.api.dataset_list(search=self.dataset_ref)
+        dataset_metadata = None
+
+        for dataset in datasets:
+            if dataset.ref == self.dataset_ref:
+                dataset_metadata = dataset.to_dict()
+                break
+
+        if not dataset_metadata:
+            raise ValueError(f"Dataset {self.dataset_ref} not found")
+
+        logger.info(f"dataset_metadata: {dataset_metadata}")
+        return iso_to_timestamp_ms(dataset_metadata["lastUpdated"])
+
+    def download_latest_metadata(self) -> str:
+        tmp_dir = "./tmp"
+        os.makedirs(tmp_dir, exist_ok=True)
+
+        self.kaggle.api.dataset_download_files(self.dataset_ref, path=tmp_dir, unzip=True)
+
+        for _, _, files in os.walk(tmp_dir):
+            json_files = [f for f in files if f.endswith(".json")]
+            if json_files:
+                return os.path.join(tmp_dir, json_files[0])
+
+        raise FileNotFoundError(f"No JSON file found in {tmp_dir}")
+
+
+def process_metadata_json(file_path: str) -> None:
+    file_size = os.path.getsize(file_path) / (1024**3)  # GB
+    logger.info(f"檔案大小: {file_size:.2f} GB")  # lambda 極限是 10 GB
+
+    df = pd.read_json(file_path, lines=True)
+    logger.info(f"df.shape: {df.shape}")
+    logger.info(f"df.columns: {df.columns}")
+    logger.info(f"df.info(): {df.info()}")
+
+    df["update_date_datetime"] = pd.to_datetime(df["update_date"])
+    # 排序 & 去除重複
+    df_dedup = df.sort_values("update_date_datetime").drop_duplicates(subset=["id"], keep="last")
+
+    logger.info("已完成 dedup")
+    logger.info(f"df_dedup.shape: {df_dedup.shape}")
+    logger.info(f"df_dedup.head(): {df_dedup.head()}")
+
+    # 切分檔案
+
+    return
 
 
 if __name__ == "__main__":
