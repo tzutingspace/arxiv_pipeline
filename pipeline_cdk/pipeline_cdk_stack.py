@@ -31,22 +31,17 @@ class PipelineCdkStack(Stack):
             no_echo=True,  # 配置参数不顯示
         )
 
+        OPENSEARCH_HOST = CfnParameter(
+            self,
+            "OPENSEARCH_HOST",
+            type="String",
+            description="OPENSEARCH_HOST",
+            no_echo=True,  # 配置参数不顯示
+        )
+
         # 透過角色 ARN 來取得現有的 IAM 角色
         existing_role_arn = f"arn:aws:iam::{os.environ['AWS_ACCOUNT']}:role/{os.environ['AWS_ROLE']}"
         existing_role = iam.Role.from_role_arn(self, "ExistingRole", role_arn=existing_role_arn)
-
-        # Defines an AWS Lambda Layer
-        # lambda_layer = _lambda.LayerVersion(
-        #     self,
-        #     "lambda-layer",
-        #     code=_lambda.AssetCode("lambda_layer/"),
-        #     compatible_architectures=[
-        #         _lambda.Architecture.ARM_64,
-        #     ],
-        #     compatible_runtimes=[
-        #         _lambda.Runtime.PYTHON_3_12,
-        #     ],
-        # )
 
         # Defines an AWS Lambda resource
         collection_layer = _lambda.DockerImageFunction(
@@ -67,53 +62,15 @@ class PipelineCdkStack(Stack):
             description="collection layer function deployed with Docker image via CDK",
         )
 
-        data_process_layer = _lambda.Function(
+        data_process_layer = _lambda.DockerImageFunction(
             self,
             "data_process_layer",
-            runtime=_lambda.Runtime.PYTHON_3_12,
-            code=_lambda.Code.from_asset(
-                "data_process_layer",
-                exclude=EXCLUDE_FILES,
-            ),
-            handler="arxiv_metadata.lambda_handler",
-            layers=[lambda_layer],
+            code=_lambda.DockerImageCode.from_image_asset("./data_process_layer"),
             role=existing_role,
             timeout=Duration.seconds(900),  # max:15min
-            # environment={
-            #     "S3_BUCKET_NAME": os.environ["S3_BUCKET_NAME"],
-            #     "S3_FOLDER_PREFIX": os.environ["S3_FOLDER_PREFIX"],
-            # },
-            architecture=_lambda.Architecture.ARM_64,
+            memory_size=512,
+            environment={
+                "OPENSEARCH_HOST": OPENSEARCH_HOST.value_as_string,
+            },
+            description="data process layer function deployed with Docker image via CDK",
         )
-
-        # Defines the transform queue
-        # transform_queue = sqs.Queue(
-        #     self,
-        #     "transformQueue",
-        #     queue_name="transformQueue",
-        #     visibility_timeout=Duration.seconds(960),  # 16min,
-        #     receive_message_wait_time=Duration.seconds(20),
-        #     # dead_letter_queue=sqs.DeadLetterQueue(max_receive_count=1, queue=dlq),
-        # )
-
-        # transform_event_source = SqsEventSource(transform_queue, batch_size=1)
-        # data_process_layer.add_event_source(transform_event_source)
-
-        # #### test
-
-        # lambda_function = _lambda.DockerImageFunction(
-        #     self,
-        #     "LambdaDockerFunction",
-        #     # function_name="my-lambda-docker-function-test",
-        #     code=_lambda.DockerImageCode.from_image_asset("./test_image_lambda"),
-        #     role=existing_role,
-        #     timeout=Duration.seconds(30),
-        #     memory_size=256,
-        #     environment={
-        #         "S3_BUCKET_NAME": os.environ["S3_BUCKET_NAME"],
-        #         "S3_FOLDER_PREFIX": os.environ["S3_FOLDER_PREFIX"],
-        #         "KAGGLE_USERNAME": KAGGLE_USERNAME.value_as_string,
-        #         "KAGGLE_KEY": KAGGLE_KEY.value_as_string,
-        #     },
-        #     description="Lambda function deployed with Docker image via CDK",
-        # )

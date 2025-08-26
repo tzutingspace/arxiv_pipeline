@@ -20,7 +20,7 @@ def get_open_search_client():
         service,
         session_token=credentials.token,
     )
-    host = os.getenv("OPEN_SEARCH_HOST")
+    host = os.getenv("OPENSEARCH_HOST")
     return OpenSearch(
         hosts=[{"host": host, "port": 443}],
         http_auth=awsauth,

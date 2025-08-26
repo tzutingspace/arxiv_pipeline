@@ -1,38 +1,75 @@
 import json
-from typing import Any
+import urllib.parse
 
-from utils.handle_authors import extract_authors
-from utils.handle_categories import extract_categories
-from utils.handle_versions import extract_versions
+import boto3
+from utils.index_to_db import bulk_index_documents
+from utils.transform_metadata import transform_metadata
 
 
 def lambda_handler(event, context):
     print("START EVENT", event)
-    metadata_list = json.loads(event["Records"][0]["body"])
-    print(f"來源內容{metadata_list}")
-    transformed_records = [transform_record(metadata) for metadata in metadata_list]
-    print(f"轉換後內容{transformed_records}")
+
+    bucket = event["Records"][0]["s3"]["bucket"]["name"]
+    key = urllib.parse.unquote_plus(event["Records"][0]["s3"]["object"]["key"], encoding="utf-8")
+    print("bucket: " + bucket)
+    print("key: " + key)
+
+    try:
+        s3 = boto3.client("s3")
+        response = s3.get_object(Bucket=bucket, Key=key)
+        metadata_list = json.loads(response["Body"].read().decode("utf-8"))
+    except Exception as e:
+        print(e)
+        print(
+            f"Error getting object {key} from bucket {bucket}. Make sure they exist and your bucket is in the same region as this function."
+        )
+        raise e
+
+    # print(f"來源內容{metadata_list}")
+
+    transformed_records = [transform_metadata(metadata) for metadata in metadata_list]
+    # print(f"轉換後內容{transformed_records}")
+
+    success, failed = bulk_index_documents("arxiv-papers", transformed_records)
+    print(f"成功索引 {success} 條記錄，失敗 {failed} 條記錄")
     return {"status": "success"}
 
 
-def transform_record(metadata: dict[str, Any]) -> dict[str, Any]:
-    """轉換單筆記錄為 OpenSearch 格式"""
+##### 地端測試用
+def mock_event():
     return {
-        "id": str(metadata["id"]),
-        "submitter": metadata.get("submitter"),
-        "title": metadata.get("title"),
-        "comments": metadata.get("comments"),
-        "journal-ref": metadata.get("journal-ref"),
-        "doi": metadata.get("doi"),
-        "report-no": metadata.get("report-no"),
-        "license": metadata.get("license"),
-        "abstract": metadata.get("abstract"),
-        "versions": extract_versions(metadata["versions"]),
-        "version_count": len(metadata.get("versions", [])),
-        "categories": extract_categories(metadata.get("categories")),
-        "update_date": metadata.get("update_date"),
-        "update_date_datetime": metadata.get("update_date_datetime"),
-        "authors": metadata.get("authors"),
-        "authors_parsed": metadata.get("authors_parsed"),
-        "authors_full_info": extract_authors(metadata.get("authors_parsed")),
+        "Records": [
+            {
+                "eventVersion": "2.0",
+                "eventSource": "aws:s3",
+                "awsRegion": "us-east-1",
+                "eventTime": "1970-01-01T00:00:00.000Z",
+                "eventName": "ObjectCreated:Put",
+                "userIdentity": {"principalId": "EXAMPLE"},
+                "requestParameters": {"sourceIPAddress": "127.0.0.1"},
+                "responseElements": {
+                    "x-amz-request-id": "EXAMPLE123456789",
+                    "x-amz-id-2": "EXAMPLE123/5678abcdefghijklambdaisawesome/mnopqrstuvwxyzABCDEFGH",
+                },
+                "s3": {
+                    "s3SchemaVersion": "1.0",
+                    "configurationId": "testConfigRule",
+                    "bucket": {
+                        "name": "arxiv-dateset",
+                        "ownerIdentity": {"principalId": "EXAMPLE"},
+                        "arn": "arn:aws:s3:::arxiv-dateset",
+                    },
+                    "object": {
+                        "key": "parsed_1755993077850/metadata-1000.json",
+                        "size": 1024,
+                        "eTag": "0123456789abcdef0123456789abcdef",
+                        "sequencer": "0A1B2C3D4E5F678901",
+                    },
+                },
+            }
+        ]
     }
+
+
+if __name__ == "__main__":
+    lambda_handler(mock_event(), None)
