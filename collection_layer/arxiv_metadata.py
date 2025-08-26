@@ -1,12 +1,14 @@
+import gc
 import json
 import logging
 import os
 import time
+from datetime import datetime
 
 import boto3
-import pandas as pd
 from dotenv import load_dotenv
 from utils.format_time import iso_to_timestamp_ms
+from utils.s3 import upload_file_to_s3, upload_json_to_s3
 
 if "AWS_LAMBDA_FUNCTION_NAME" in os.environ:
     logger = logging.getLogger()
@@ -20,9 +22,6 @@ load_dotenv()
 
 S3_BUCKET_NAME = os.getenv("S3_BUCKET_NAME")
 S3_FOLDER_PREFIX = os.getenv("S3_FOLDER_PREFIX")
-
-SOURCE_GCS_BUCKET_NAME = "arxiv-dataset"
-SOURCE_GCS_OBJECT_NAME = "metadata-v5/arxiv-metadata-oai.json"
 
 
 def lambda_handler(event, context):
@@ -43,11 +42,11 @@ def lambda_handler(event, context):
     source_file_path = kaggle_arxiv_metadata_service.download_latest_metadata()
 
     # # 5. 處理 metadata.json 的資料
-    process_metadata_json(source_file_path)
+    process_metadata(source_file_path, latest_update_timestamp)
 
     # 6. 上傳最新的 metadata.json 至 S3, 表示已進入下一個流程
     new_file_name = f"{S3_FOLDER_PREFIX}-{latest_update_timestamp}.json"
-    # upload_to_s3(S3_BUCKET_NAME, new_file_name, source_file_path)
+    upload_file_to_s3(S3_BUCKET_NAME, new_file_name, source_file_path)
 
     return {"status": "success"}
 
@@ -60,11 +59,6 @@ def get_latest_processed_timestamp() -> int:
     latest_file = max(response["Contents"], key=lambda x: x["LastModified"])
     logger.info(f"latest_processed_file: {latest_file}")
     return latest_file["Key"].split("-")[-1].split(".")[0]
-
-
-def upload_to_s3(bucket_name: str, object_name: str, file_path: str) -> None:
-    s3 = boto3.client("s3")
-    s3.upload_file(file_path, bucket_name, object_name)
 
 
 class ArxivMetadataService:
@@ -110,44 +104,70 @@ class ArxivMetadataService:
         raise FileNotFoundError(f"No JSON file found in {tmp_dir}")
 
 
-def process_metadata_json(file_path: str) -> None:
-    file_size = os.path.getsize(file_path) / (1024**3)  # GB
-    logger.info(f"檔案大小: {file_size:.2f} GB")  # lambda 極限是 10 GB
+def process_metadata(file_path: str, timestamp_str: str):
+    processed_count = 0
+    error_count = 0
 
-    # 讀取資料
-    st = time.time()
-    df = pd.read_json(file_path, lines=True)
-    logger.info(f"讀取資料花費時間: {time.time() - st:.2f} 秒")
+    id_update_map = {}
+    results = []
+    with open(file_path, encoding="utf-8") as file:
+        for line_num, line in enumerate(file, 1):
+            line = line.strip()
 
-    logger.info(f"總記錄數: {df.shape}")
+            # 跳過空行
+            if not line:
+                continue
 
-    st = time.time()
-    df["update_date_datetime"] = pd.to_datetime(df["update_date"])
-    df["update_date_timestamp"] = df["update_date_datetime"].apply(lambda x: x.timestamp())
-    df_dedup = df.sort_values("update_date_datetime").drop_duplicates(subset=["id"], keep="last")
+            try:
+                item = json.loads(line)
+                result = process_single_item(item)
 
-    logger.info(f"去重後記錄數: {df_dedup.shape[0]}")
-    logger.info(f"去重花費時間: {time.time() - st:.2f} 秒")
+                if result["id"] not in id_update_map:
+                    id_update_map[result["id"]] = result["update_timestamp"]
 
-    logger.info(json.loads(df_dedup[0:10].to_json(orient="records")))
-    # 切分檔案
-    # CHUNK_SIZE = 100
-    # for i in range(0, len(deduped_data), CHUNK_SIZE):
-    #     chunk = deduped_data[i : i + CHUNK_SIZE]
-    #     sqs_send_message(chunk)
-    #     if i > 10000:
-    #         break
+                # 該筆資料較舊，跳過
+                elif result["update_timestamp"] < id_update_map[result["id"]]:
+                    continue
 
-    return df_dedup
+                processed_count += 1
+                results.append(result)
+
+                # 定期清理記憶體
+                if processed_count % 1000 == 0:
+                    logger.info(f"已處理 {processed_count} 筆")
+                    upload_json_to_s3(
+                        results,
+                        S3_BUCKET_NAME,
+                        f"parsed_{timestamp_str}/metadata-{processed_count}.json",
+                    )
+                    results.clear()
+                    gc.collect()
+
+                # TODO: 因為測試而已，限定數量
+                if processed_count >= 100000:
+                    break
+
+            except json.JSONDecodeError as e:
+                error_count += 1
+                if error_count <= 10:  # 只印前 10 個錯誤
+                    logger.error(f"第 {line_num} 行 JSON 錯誤: {e}")
+                    logger.error(f"問題行: {line[:100]}...")
+                continue
+
+            except Exception as e:
+                error_count += 1
+                logger.error(f"第 {line_num} 行處理錯誤: {e}")
+                continue
+
+    logger.info(f"處理完成: 成功 {processed_count} 筆, 錯誤 {error_count} 筆")
+    return processed_count
 
 
-def sqs_send_message(message: dict) -> None:
-    sqs = boto3.client("sqs")
-    response = sqs.send_message(
-        QueueUrl=os.getenv("SQS_QUEUE_URL"),
-        MessageBody=json.dumps(message),
-    )
-    logger.info(f"Message sent successfully. Message ID: {response['MessageId']}")
+def process_single_item(item):
+    update_time_str = item["update_date"]
+    dt = datetime.strptime(update_time_str, "%Y-%m-%d")
+    item["update_timestamp"] = int(dt.timestamp())
+    return item
 
 
 if __name__ == "__main__":
