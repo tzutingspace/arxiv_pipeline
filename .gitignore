@@ -237,5 +237,6 @@ __pycache__
 .cdk.staging
 cdk.out
 /lambda_layer/python/*/
+/lambda_layer/python/*
 
 */snapshot.json

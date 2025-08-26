@@ -9,7 +9,7 @@ dependencies = [
     "dotenv>=0.9.9",
     "kaggle>=1.7.4.5",
     "opensearch-py>=3.0.0",
-    "pandas>=2.3.2",
+    "pandas==2.1.4",
 ]
 
 [tool.ruff]
@@ -22,14 +22,8 @@ force-single-line = false              # 預設不強制每個 import 獨立成�
 known-first-party = ["app", "de_*kit"]
 
 [dependency-groups]
-deploy = [
-    "aws-cdk-lib>=2.212.0",
-    "constructs>=10.0.0,<11.0.0",
-]
-dev = [
-    "ipykernel>=6.30.1",
-    "pytest==6.2.5",
-]
+deploy = ["aws-cdk-lib>=2.212.0", "constructs>=10.0.0,<11.0.0"]
+dev = ["ipykernel>=6.30.1", "pytest==6.2.5"]
 
 
 [tool.ruff.lint] # https://docs.astral.sh/ruff/settings/#lint
