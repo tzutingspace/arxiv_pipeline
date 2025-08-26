@@ -2,9 +2,9 @@ import json
 import logging
 import os
 import time
-from datetime import datetime
 
 import boto3
+import pandas as pd
 from dotenv import load_dotenv
 from utils.format_time import iso_to_timestamp_ms
 
@@ -39,15 +39,15 @@ def lambda_handler(event, context):
         logger.info("source file is up to date")
         return {"status": "skip"}
 
-    # 4. 下載最新的 metadata.json
+    # # 4. 下載最新的 metadata.json
     source_file_path = kaggle_arxiv_metadata_service.download_latest_metadata()
 
-    # 5. 處理 metadata.json 的資料
+    # # 5. 處理 metadata.json 的資料
     process_metadata_json(source_file_path)
 
     # 6. 上傳最新的 metadata.json 至 S3, 表示已進入下一個流程
     new_file_name = f"{S3_FOLDER_PREFIX}-{latest_update_timestamp}.json"
-    upload_to_s3(S3_BUCKET_NAME, new_file_name, source_file_path)
+    # upload_to_s3(S3_BUCKET_NAME, new_file_name, source_file_path)
 
     return {"status": "success"}
 
@@ -99,10 +99,11 @@ class ArxivMetadataService:
 
         st = time.time()
         self.kaggle.api.dataset_download_files(self.dataset_ref, path=tmp_dir, unzip=True)
-        print(f"下載並解壓縮檔案花費時間: {time.time() - st:.2f} 秒")
+        logger.info(f"下載並解壓縮檔案花費時間: {time.time() - st:.2f} 秒")
 
         for _, _, files in os.walk(tmp_dir):
-            json_files = [f for f in files if f.endswith(".json")]
+            logger.info(f"找到的檔案: {files}")
+            json_files = [f for f in files if f == "arxiv-metadata-oai-snapshot.json"]
             if json_files:
                 return os.path.join(tmp_dir, json_files[0])
 
@@ -114,40 +115,21 @@ def process_metadata_json(file_path: str) -> None:
     logger.info(f"檔案大小: {file_size:.2f} GB")  # lambda 極限是 10 GB
 
     # 讀取資料
-    data = []
     st = time.time()
-    with open(file_path, encoding="utf-8") as f:
-        for line in f:
-            if line.strip():
-                record = json.loads(line)
-                data.append(record)
-    print(f"讀取資料花費時間: {time.time() - st:.2f} 秒")
+    df = pd.read_json(file_path, lines=True)
+    logger.info(f"讀取資料花費時間: {time.time() - st:.2f} 秒")
 
-    print(f"總記錄數: {len(data)}")
-    if data:
-        print(f"欄位: {list(data[0].keys())}")
+    logger.info(f"總記錄數: {df.shape}")
 
-    # 轉換日期格式並排序
-    for record in data:
-        record["update_date_datetime"] = datetime.fromisoformat(
-            record["update_date"].replace("Z", "+00:00")
-        ).timestamp()
-
-    # 按日期排序
-    data.sort(key=lambda x: x["update_date_datetime"])
-
-    # 去重複（保留最新的記錄）
     st = time.time()
-    seen_ids = {}
-    for record in data:
-        record_id = record["id"]
-        if record_id not in seen_ids or record["update_date_datetime"] > seen_ids[record_id]["update_date_datetime"]:
-            seen_ids[record_id] = record
+    df["update_date_datetime"] = pd.to_datetime(df["update_date"])
+    df["update_date_timestamp"] = df["update_date_datetime"].apply(lambda x: x.timestamp())
+    df_dedup = df.sort_values("update_date_datetime").drop_duplicates(subset=["id"], keep="last")
 
-    deduped_data = list(seen_ids.values())
-    print(f"去重後記錄數: {len(deduped_data)}")
-    print(f"去重花費時間: {time.time() - st:.2f} 秒")
+    logger.info(f"去重後記錄數: {df_dedup.shape[0]}")
+    logger.info(f"去重花費時間: {time.time() - st:.2f} 秒")
 
+    logger.info(json.loads(df_dedup[0:10].to_json(orient="records")))
     # 切分檔案
     # CHUNK_SIZE = 100
     # for i in range(0, len(deduped_data), CHUNK_SIZE):
@@ -156,7 +138,7 @@ def process_metadata_json(file_path: str) -> None:
     #     if i > 10000:
     #         break
 
-    return deduped_data
+    return df_dedup
 
 
 def sqs_send_message(message: dict) -> None:
