@@ -46,10 +46,10 @@ arxiv-pipeline/
 整體運作流程
 1. 透過 EventBridge 定期觸發 Collection Layer 的 Lambda 服務。 (預計每日可觸發一次, 避免來源資料更新頻率不如預期)
 2. Collection Layer Lambda 服務啟動後，從 S3 下載原始資料，並進行初步的資料清理(去除重複)，最後將處理後的資料上傳至另一個 S3 存儲桶，供 Data Process Layer 使用。
-    2-1. 每次會先進行 metadata 的更新時間檢查，若無新資料則不進行後續處理。
-    2-2. 會進行資料去重，避免重複索引相同論文。(依據 update_date)
-    2-3. 進行資料切分，避免單次處理過多資料導致 Lambda 超時或資料異常導致錯誤。
-    2-4. 最後會存放來源資料並標註時間，供後續比對、異常確認與 recovery。
+    - 2-1. 每次會先進行 metadata 的更新時間檢查，若無新資料則不進行後續處理。
+    - 2-2. 會進行資料去重，避免重複索引相同論文。(依據 update_date)
+    - 2-3. 進行資料切分，避免單次處理過多資料導致 Lambda 超時或資料異常導致錯誤。
+    - 2-4. 最後會存放來源資料並標註時間，供後續比對、異常確認與 recovery。
 3. 由 S3 觸發 Data Process Layer 的 Lambda 服務，開始對上傳的資料進行轉換與寫入資料庫。
 
 ## Architectural and processing design considerations
