@@ -3,8 +3,6 @@ import os
 from aws_cdk import CfnParameter, Duration, Stack
 from aws_cdk import aws_iam as iam
 from aws_cdk import aws_lambda as _lambda
-from aws_cdk import aws_sqs as sqs
-from aws_cdk.aws_lambda_event_sources import SqsEventSource
 from constructs import Construct
 from dotenv import load_dotenv
 
@@ -38,31 +36,27 @@ class PipelineCdkStack(Stack):
         existing_role = iam.Role.from_role_arn(self, "ExistingRole", role_arn=existing_role_arn)
 
         # Defines an AWS Lambda Layer
-        lambda_layer = _lambda.LayerVersion(
-            self,
-            "lambda-layer",
-            code=_lambda.AssetCode("lambda_layer/"),
-            compatible_architectures=[
-                _lambda.Architecture.ARM_64,
-            ],
-            compatible_runtimes=[
-                _lambda.Runtime.PYTHON_3_12,
-            ],
-        )
+        # lambda_layer = _lambda.LayerVersion(
+        #     self,
+        #     "lambda-layer",
+        #     code=_lambda.AssetCode("lambda_layer/"),
+        #     compatible_architectures=[
+        #         _lambda.Architecture.ARM_64,
+        #     ],
+        #     compatible_runtimes=[
+        #         _lambda.Runtime.PYTHON_3_12,
+        #     ],
+        # )
 
         # Defines an AWS Lambda resource
-        collection_layer = _lambda.Function(
+        collection_layer = _lambda.DockerImageFunction(
             self,
             "collection_layer",
-            runtime=_lambda.Runtime.PYTHON_3_12,
-            code=_lambda.Code.from_asset(
-                "collection_layer",
-                exclude=EXCLUDE_FILES,
-            ),
-            handler="arxiv_metadata.lambda_handler",
-            layers=[lambda_layer],
+            code=_lambda.DockerImageCode.from_image_asset("./collection_layer"),
             role=existing_role,
             timeout=Duration.seconds(900),  # max:15min
+            memory_size=10240,
+            # ephemeral_storage_size="10240 MiB",
             environment={
                 "S3_BUCKET_NAME": os.environ["S3_BUCKET_NAME"],
                 "S3_FOLDER_PREFIX": os.environ["S3_FOLDER_PREFIX"],
@@ -70,7 +64,7 @@ class PipelineCdkStack(Stack):
                 "KAGGLE_KEY": KAGGLE_KEY.value_as_string,
                 "KAGGLE_CONFIG_DIR": "/tmp",
             },
-            architecture=_lambda.Architecture.ARM_64,
+            description="collection layer function deployed with Docker image via CDK",
         )
 
         data_process_layer = _lambda.Function(
@@ -93,39 +87,25 @@ class PipelineCdkStack(Stack):
         )
 
         # Defines the transform queue
-        transform_queue = sqs.Queue(
-            self,
-            "transformQueue",
-            queue_name="transformQueue",
-            visibility_timeout=Duration.seconds(960),  # 16min,
-            receive_message_wait_time=Duration.seconds(20),
-            # dead_letter_queue=sqs.DeadLetterQueue(max_receive_count=1, queue=dlq),
-        )
-
-        transform_event_source = SqsEventSource(transform_queue, batch_size=1)
-        data_process_layer.add_event_source(transform_event_source)
-
-        #### test
-
-        # docker_image_asset = ecr_assets.DockerImageAsset(
+        # transform_queue = sqs.Queue(
         #     self,
-        #     "LambdaDockerImage",
-        #     directory="./collection_layer",
-        #     file="Dockerfile",
-        #     platform=ecr_assets.Platform.LINUX_AMD64,
-        #     build_args={
-        #         "BUILDKIT_INLINE_CACHE": "1",
-        #         # 可以加入更多 build args
-        #     },
-        #     exclude=["*.md", "*.pyc", "__pycache__", ".git", ".gitignore"],
+        #     "transformQueue",
+        #     queue_name="transformQueue",
+        #     visibility_timeout=Duration.seconds(960),  # 16min,
+        #     receive_message_wait_time=Duration.seconds(20),
+        #     # dead_letter_queue=sqs.DeadLetterQueue(max_receive_count=1, queue=dlq),
         # )
 
-        # dockerfile_dir = "./collection_layer"
+        # transform_event_source = SqsEventSource(transform_queue, batch_size=1)
+        # data_process_layer.add_event_source(transform_event_source)
+
+        # #### test
+
         # lambda_function = _lambda.DockerImageFunction(
         #     self,
         #     "LambdaDockerFunction",
-        #     function_name="my-lambda-docker-function",
-        #     code=_lambda.DockerImageCode.from_image_asset(dockerfile_dir),
+        #     # function_name="my-lambda-docker-function-test",
+        #     code=_lambda.DockerImageCode.from_image_asset("./test_image_lambda"),
         #     role=existing_role,
         #     timeout=Duration.seconds(30),
         #     memory_size=256,
