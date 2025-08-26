@@ -21,7 +21,7 @@ def extract_versions(versions: list[dict[str, str]]) -> list[dict[str, str | int
                 {
                     "version": version["version"],
                     "created_str": version["created"],
-                    "created_time": created_time,
+                    "created_timestamp": created_time,
                 },
             )
 
